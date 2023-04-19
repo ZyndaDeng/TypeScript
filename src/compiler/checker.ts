@@ -1388,6 +1388,52 @@ export function isInstantiatedModule(node: ModuleDeclaration, preserveConstEnums
 
 /** @internal */
 export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
+
+    //#region 运算符重载
+    function getAllCallSignature(type:Type){
+        if (type.flags & TypeFlags.Object) {
+            const resolved = resolveStructuredTypeMembers(<ObjectType>type);
+            return resolved.callSignatures;
+        }
+        return undefined;
+    }
+
+    const opr2Name:Record<number,string>={
+        [SyntaxKind.PlusToken]:"oprAdd",//+
+        [SyntaxKind.MinusToken]:"oprSub",//-
+        [SyntaxKind.AsteriskToken]:"oprMult",//*
+        [SyntaxKind.SlashToken]:"oprDiv",// /
+        [SyntaxKind.PlusEqualsToken]:"oprAddTo",//+=
+        [SyntaxKind.MinusEqualsToken]:"oprSubTo",//-=
+        [SyntaxKind.AsteriskEqualsToken]:"oprMultTo",//*=
+        [SyntaxKind.SlashEqualsToken]:"oprDivTo",// /=
+    };
+    /**判断类型是否有运算符重载 并且返回该类型*/
+    function checkCustomArithmetic(leftType: Type, rightType: Type, operator: SyntaxKind) {
+        if (leftType.flags & TypeFlags.Object) {
+            let funcType: Type | undefined = undefined;
+           
+            let oprName=opr2Name[operator];
+            if(oprName){
+                funcType=getTypeOfPropertyOfType(leftType, oprName as __String);
+            }
+            if (funcType) {
+                let signs = getAllCallSignature(funcType);
+                if (signs) {
+                    for(let s of signs){
+                        let p = getTypeAtPosition(s, 0);
+                        let count = getMinArgumentCount(s);
+                        if( count == 1 && isTypeAssignableTo(rightType,p)){
+                            return getReturnTypeOfSignature(s);
+                        }
+                    }
+                }
+            }
+        }
+        return undefined;
+    }
+    //#endregion
+
     // Why var? It avoids TDZ checks in the runtime which can be costly.
     // See: https://github.com/microsoft/TypeScript/issues/52924
     /* eslint-disable no-var */
@@ -36765,6 +36811,8 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
         errorNode?: Node
     ): Type {
         const operator = operatorToken.kind;
+        /**自定义运算符重载的类型 */
+        const customArithmetic=checkCustomArithmetic(leftType, rightType, operator);
         switch (operator) {
             case SyntaxKind.AsteriskToken:
             case SyntaxKind.AsteriskAsteriskToken:
@@ -36803,8 +36851,10 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
                     (suggestedOperator = getSuggestedBooleanOperator(operatorToken.kind)) !== undefined) {
                     error(errorNode || operatorToken, Diagnostics.The_0_operator_is_not_allowed_for_boolean_types_Consider_using_1_instead, tokenToString(operatorToken.kind), tokenToString(suggestedOperator));
                     return numberType;
-                }
-                else {
+                }else if( customArithmetic){
+                    //判断运算符重载类型
+                    return customArithmetic;
+                }else {
                     // otherwise just check each operand separately and report errors as normal
                     const leftOk = checkArithmeticOperandType(left, leftType, Diagnostics.The_left_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
                     const rightOk = checkArithmeticOperandType(right, rightType, Diagnostics.The_right_hand_side_of_an_arithmetic_operation_must_be_of_type_any_number_bigint_or_an_enum_type, /*isAwaitValid*/ true);
@@ -36865,6 +36915,10 @@ export function createTypeChecker(host: TypeCheckerHost): TypeChecker {
                 else if (isTypeAssignableToKind(leftType, TypeFlags.StringLike, /*strict*/ true) || isTypeAssignableToKind(rightType, TypeFlags.StringLike, /*strict*/ true)) {
                     // If one or both operands are of the String primitive type, the result is of the String primitive type.
                     resultType = stringType;
+                }
+                else if(customArithmetic){
+                    //+运算符 类型不是数字或字符串 判断是否符合运算符重载要求
+                    resultType=customArithmetic;
                 }
                 else if (isTypeAny(leftType) || isTypeAny(rightType)) {
                     // Otherwise, the result is of type Any.
